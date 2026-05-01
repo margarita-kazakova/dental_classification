@@ -1,4 +1,4 @@
-# Это шаблон. Вставьте свои пути, а затем переименуйте этот файл в run_dental_classification
+# Это шаблон. Вставьте свои пути, а затем переименуйте этот файл в run_dental_classification.slurm
 
 #!/bin/bash
 #SBATCH --job-name="dental_classifier"
@@ -7,13 +7,13 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --time=0-12:0
-#SBATCH --mail-user=YOUR_EMAIL@edu.hse.ru
+#SBATCH --mail-user=YOUR_EMAIL
 #SBATCH --mail-type=END,FAIL
 #SBATCH --output=out_classifier_%j.out
 #SBATCH --error=err_classifier_%j.out
 
-module load CUDA/12.4
-module load Python/Anaconda
+module load CUDA/12.4 # или ваш
+module load Python/Anaconda # или ваш
 
 source activate YOUR_ENV_NAME
 

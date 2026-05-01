@@ -20,14 +20,22 @@ ENV/
 *.ckpt
 *.pt
 *.h5
-best_model.pth
+outputs_classifier_*/best_model.pth
+!releases/best_model.pth
 
 # Данные (большие папки)
 AlphaDent/
-data/
 *.jpg
 *.png
 *.jpeg
+
+# Игнорировать train.csv и valid.csv в корневой папке
+/train.csv
+/valid.csv
+# НЕ игнорировать train.csv и valid.csv в папке releases
+!releases/
+!releases/train.csv
+!releases/valid.csv
 
 # Логи и временные файлы
 wandb/
