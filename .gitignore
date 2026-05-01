@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Виртуальное окружение
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Модели и веса
+*.pth
+*.ckpt
+*.pt
+*.h5
+best_model.pth
+
+# Данные (большие папки)
+AlphaDent/
+data/
+*.jpg
+*.png
+*.jpeg
+
+# Логи и временные файлы
+wandb/
+*.log
+*.out
+*.err
+tmp_slurm_*
+outputs_classifier_*/
+*.tmp
+
+# Ключи
+.wandb_key
+wandb_api_key.txt
+
+# Slurm скрипты с личными путями
+run_dental_classification.slurm
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+desktop.ini
