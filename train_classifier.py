@@ -16,25 +16,39 @@ from tqdm import tqdm
 import warnings
 import os
 import csv
+import timm # чтобы использовать веса maxvit_tiny_tf_512_weights.safetensors, в torchvision нет архитектуры maxvit_tiny_tf_512.in1k
 from collections import Counter
 warnings.filterwarnings('ignore')
 
 # ПАРАМЕТРЫ
 parser = argparse.ArgumentParser()
-parser.add_argument('--csv', type=str, required=True, help='путь к csv с колонками image_path, age, gender, bite')
+# входные данные
+parser.add_argument('--csv', type=str, required=True,
+                    help='путь к csv с колонками image_path, age, gender, bite')
+parser.add_argument('--weights_path', type=str, default=None,
+                    help='путь к файлу весов (efficientnet-b0 или maxvit)')
+# параметры
+parser.add_argument('--backbone', type=str, default='maxvit', choices=['maxvit', 'efficientnet'],
+                    help='тип бэкбона (maxvit для 512x512, efficientnet для 224x224)')
 parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('--num_workers', type=int, default=0)
 parser.add_argument('--epochs', type=int, default=30)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
-parser.add_argument('--img_size', type=int, default=224)
-parser.add_argument('--patience', type=int, default=10, help='остановка обучения если val_loss не улучшалась 10 эпох')
-parser.add_argument('--output_dir', type=str, default='./outputs', help='папка для сохранения модели и метрик')
-parser.add_argument('--use_wandb', action='store_true', help='логировать в wandb')
-parser.add_argument('--wandb_project', type=str, default='dental_classification', help='название проекта в WandB')
-parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity (username или team name)')
-parser.add_argument('--weights_path', type=str, default='./efficientnet_b0_weights.pth',
-                    help='путь к файлу весов EfficientNet-B0 (можно скачать с https://download.pytorch.org/models/efficientnet_b0_rwightman-3dd342df.pth)')
+parser.add_argument('--img_size', type=int, default=512,
+                    help='размер входного изображения (maxvit: 512, efficientnet: 224)')
+parser.add_argument('--patience', type=int, default=10,
+                    help='остановка обучения если val_loss не улучшалась 10 эпох')
+# выходные данные
+parser.add_argument('--output_dir', type=str, default='./outputs',
+                    help='папка для сохранения модели и метрик')
+parser.add_argument('--use_wandb', action='store_true',
+                    help='логировать в wandb')
+parser.add_argument('--wandb_project', type=str, default='dental_classification',
+                    help='название проекта в wandb')
+parser.add_argument('--wandb_entity', type=str, default=None,
+                    help='wandB entity (username или team name)')
+
 args = parser.parse_args()
 
 # инициализация wandb (если используется)
@@ -165,6 +179,31 @@ bite_weight_tensor = torch.tensor(bite_weights, dtype=torch.float32).to(DEVICE)
 print("Веса возраста:", age_weight_tensor)
 print("Веса прикуса:", bite_weight_tensor)
 
+# функция потерь, для устранения дисбаланса классов возраста
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha # веса классов
+        self.gamma = gamma # параметр фокусировки
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        # стандартная кросс-энтропия
+        ce_loss = nn.functional.cross_entropy(
+            inputs, targets, reduction='none', weight=self.alpha
+        )
+        # вероятность правильного класса
+        pt = torch.exp(-ce_loss)
+        # focal loss
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 # ДАТАСЕТ
 class DentalDataset(Dataset):
     def __init__(self, df, transform=None, preload=False, use_gpu_augment=False):
@@ -176,7 +215,7 @@ class DentalDataset(Dataset):
 
         if self.preload:
             self.images = []
-            for idx in tqdm(range(len(self.df)), desc="Preloading images"):
+            for idx in tqdm(range(len(self.df)), desc="Загружаем изображения..."):
                 img = Image.open(self.df.iloc[idx]['image_path']).convert('RGB')
                 if self.transform:
                     img = self.transform(img)
@@ -230,44 +269,89 @@ print(f"Батчи трейна: {len(train_loader)}, Батчи валидац�
 
 # МОДЕЛЬ
 class MultiTaskModel(nn.Module):
-    def __init__(self, num_age_classes=3, weights_path=None):
+    def __init__(self, num_age_classes=3, backbone='maxvit', weights_path=None):
         super().__init__()
+        self.backbone_name = backbone
 
-        if weights_path is None:
-            weights_path = args.weights_path
-        # пытаемся загрузить веса
-        if os.path.exists(weights_path):
-            print(f"Загружаем веса EfficientNet-B0 из файла: {weights_path}")
-            backbone = models.efficientnet_b0(weights=None)
-            state_dict = torch.load(weights_path, map_location='cpu')
-            backbone.load_state_dict(state_dict)
-            print("Веса успешно загружены")
-        else:
-            # если файл не найден:
-            print(f"Файл с весами не найден: {weights_path}\n")
-            print("Пожалуйста, скачайте предобученные веса EfficientNet-B0:")
-            print("  wget https://download.pytorch.org/models/efficientnet_b0_rwightman-3dd342df.pth")
-            print(f"  mv efficientnet_b0_rwightman-3dd342df.pth {weights_path}\n")
-            print("Или укажите правильный путь через аргумент --weights_path")
-            raise FileNotFoundError(f"Файл с весами не найден: {weights_path}")
+        if backbone == 'maxvit': # maxvit
+            print("Загружаем MaxViT Tiny 512...")
+            model_name = 'maxvit_tiny_tf_512.in1k'
 
-        in_features = backbone.classifier[1].in_features
-        backbone.classifier = nn.Identity()
-        self.backbone = backbone
-        self.age_head = nn.Linear(in_features, num_age_classes)
-        self.gender_head = nn.Linear(in_features, 1)
-        self.bite_head = nn.Linear(in_features, 3)
+            if weights_path and os.path.exists(weights_path):
+                print(f"Загружаем веса из файла: {weights_path}...")
+                model = timm.create_model(model_name, pretrained=False, num_classes=0)
+                # Загрузка safetensors
+                if weights_path.endswith('.safetensors'):
+                    from safetensors.torch import load_file
+                    state_dict = load_file(weights_path)
+                else:
+                    state_dict = torch.load(weights_path, map_location='cpu')
+                model.load_state_dict(state_dict, strict=False)
+                print("Веса maxvit загружены из локального файла")
+            else:
+                print("Загружаем предобученные веса maxvit из интернета...")
+                model = timm.create_model(model_name, pretrained=True, num_classes=0)
+                print("Веса maxvit загружены")
+                if weights_path: # cохраняем
+                    torch.save(model.state_dict(), weights_path)
+                    print(f"Веса сохранены в {weights_path}")
+
+            in_features = model.num_features
+            self.backbone = model
+            print(f"Maxvit загружен. Размер признаков: {in_features}")
+
+        else:  # efficientnet
+            print("Загружаем efficientnet-b0...")
+            if weights_path and os.path.exists(weights_path):
+                print(f"Загружаем веса из файла: {weights_path}...")
+                backbone_model = models.efficientnet_b0(weights=None)
+                state_dict = torch.load(weights_path, map_location='cpu')
+                backbone_model.load_state_dict(state_dict)
+            else:
+                print("Загружаем стандартные веса EfficientNet из интернета...")
+                backbone_model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+
+            in_features = backbone_model.classifier[1].in_features
+            backbone_model.classifier = nn.Identity()
+            self.backbone = backbone_model
+            print(f"Efficientnet загружен. Размер признаков: {in_features}")
+
+        # головы с Dropout
+        dropout_rate = 0.2 if backbone == 'maxvit' else 0.1
+
+        self.age_head = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, num_age_classes)
+        )
+        self.gender_head = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, 1)
+        )
+        self.bite_head = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, 3)
+        )
     def forward(self, x):
         features = self.backbone(x)
-        features = features.view(features.size(0), -1)
+        # если features не плоский, делаем flatten
+        if features.dim() > 2:
+            features = features.flatten(1)
         age_out = self.age_head(features)
-        gender_out = self.gender_head(features).squeeze()
+        gender_out = self.gender_head(features).view(-1)  # [batch_size]
         bite_out = self.bite_head(features)
         return age_out, gender_out, bite_out
 
-model = MultiTaskModel(num_age_classes=3, weights_path=args.weights_path).to(DEVICE)
+# создание модели
+model = MultiTaskModel(
+    num_age_classes=3,
+    backbone=args.backbone,
+    weights_path=args.weights_path
+).to(DEVICE)
 
-criterion_age = nn.CrossEntropyLoss(weight=age_weight_tensor)
+# criterion_age = nn.CrossEntropyLoss(weight=age_weight_tensor)
+# print(f"criterion_age = nn.CrossEntropyLoss(weight=age_weight_tensor)")
+criterion_age = FocalLoss(alpha=age_weight_tensor, gamma=2.0)
+print(f"criterion_age = FocalLoss(alpha=age_weight_tensor, gamma=2.0)")
 criterion_gender = nn.BCEWithLogitsLoss()
 criterion_bite = nn.CrossEntropyLoss(weight=bite_weight_tensor)
 

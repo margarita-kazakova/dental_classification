@@ -1,4 +1,4 @@
-# Это шаблон. Вставьте свои пути, а затем переименуйте этот файл в run_dental_classification.slurm
+# Это шаблон. Вставьте свои пути, выберите efficientnet-b0 или maxvit, а затем переименуйте этот файл в run_dental_classification.slurm
 
 #!/bin/bash
 #SBATCH --job-name="dental_classifier"
@@ -33,18 +33,34 @@ rsync -avh --progress /path/to/your/dataset_relative.csv "$LOCAL_SCRATCH/"
 OUTPUT_LOCAL="$LOCAL_SCRATCH/outputs"
 mkdir -p "$OUTPUT_LOCAL"
 
-echo "=== Начинаем обучение: ==="
+echo "=== Начинаем обучение с Efficientnet-b0: ==="
 srun python /path/to/your/train_classifier.py \
     --csv "$LOCAL_SCRATCH/dataset_relative.csv" \
     --weights_path /path/to/your/efficientnet_b0_weights.pth \
+    --img_size 224 \
     --batch_size 64 \
     --num_workers 0 \
     --epochs 30 \
     --lr 1e-3 \
     --weight_decay 1e-4 \
     --patience 10 \
-    --output_dir "$OUTPUT_LOCAL"
-    # --use_wandb
+    --output_dir "$OUTPUT_LOCAL" \
+    --use_wandb
+
+# echo "=== Начинаем обучение с Maxvit: ==="
+# srun python /home/makazakova_4/dental_classification/train_classifier.py \
+#     --csv "$LOCAL_SCRATCH/dataset_relative.csv" \
+#     --backbone maxvit \
+#     --weights_path /path/to/your/maxvit_tiny_tf_512_weights.safetensors \
+#     --img_size 512 \
+#     --batch_size 4 \
+#     --num_workers 0 \
+#     --epochs 30 \
+#     --lr 5e-5 \
+#     --weight_decay 1e-4 \
+#     --patience 10 \
+#     --output_dir "$OUTPUT_LOCAL" \
+#     --use_wandb
 
 FINAL_OUTPUT="/home/YOUR_USERNAME/dental_classification/outputs_classifier_${SLURM_JOB_ID}"
 mkdir -p "$FINAL_OUTPUT"
